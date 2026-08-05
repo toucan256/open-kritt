@@ -6,20 +6,12 @@ import { serializeVulnerability } from '../lib/serialize.js';
 const router = Router();
 
 function canonicalJson(value) {
-  if (value === null || typeof value !== 'object') return pythonJsonScalar(value);
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
   return `{${Object.keys(value)
     .sort()
-    .map((key) => `${pythonJsonScalar(key)}:${canonicalJson(value[key])}`)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
     .join(',')}}`;
-}
-
-function pythonJsonScalar(value) {
-  const serialized = JSON.stringify(value);
-  if (typeof value !== 'string') return serialized;
-  return serialized.replace(/[\u007f-\uffff]/g, (character) => {
-    return `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`;
-  });
 }
 
 export function canonicalJsonSha256(value) {
