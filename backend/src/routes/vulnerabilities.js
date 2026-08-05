@@ -43,10 +43,18 @@ export function matchesExpectedIdentity(vulnerability, scan, expectedIdentity) {
   );
 }
 
+export function preservesProtectedReverseExportMarkers(existingComments, replacementComments) {
+  const pattern = /\[cvuln reverse export open-kritt-reverse-[0-9a-f]{24}\]/g;
+  const existingMarkers = new Set(String(existingComments || '').match(pattern) || []);
+  const replacementMarkers = new Set(String(replacementComments || '').match(pattern) || []);
+  return [...existingMarkers].every((marker) => replacementMarkers.has(marker));
+}
+
 export function buildVulnerabilityPatch(body = {}) {
   const data = {};
   let appendComments;
   let expectedIdentity;
+  let expectedComments;
   if ('interesting' in body) {
     const val = body.interesting;
     if (val === null) data.interesting = null;
@@ -57,6 +65,17 @@ export function buildVulnerabilityPatch(body = {}) {
     return { error: { field: 'comments', message: 'comments and appendComments are mutually exclusive.' } };
   }
   if ('comments' in body) {
+    if (!('expectedComments' in body)) {
+      return { error: { field: 'expectedComments', message: 'comments replacement requires the prior value.' } };
+    }
+    expectedComments = body.expectedComments === null ? '' : String(body.expectedComments);
+    const replacement = body.comments === null ? '' : String(body.comments);
+    if (
+      Buffer.byteLength(expectedComments, 'utf8') > 1024 * 1024 ||
+      Buffer.byteLength(replacement, 'utf8') > 1024 * 1024
+    ) {
+      return { error: { field: 'comments', message: 'comments must not exceed 1 MiB.' } };
+    }
     data.comments = body.comments === null || body.comments === '' ? null : String(body.comments);
   }
   if ('appendComments' in body) {
@@ -80,7 +99,7 @@ export function buildVulnerabilityPatch(body = {}) {
   if (Object.keys(data).length === 0 && appendComments === undefined) {
     return { error: { field: 'body', message: 'Provide interesting, comments, and/or appendComments.' } };
   }
-  return { data, appendComments, expectedIdentity };
+  return { data, appendComments, expectedIdentity, expectedComments };
 }
 
 // GET /api/vulnerabilities/:id — a single finding with its post-script output.
@@ -154,6 +173,27 @@ router.patch('/:id', async (req, res, next) => {
           WHERE "id" = ${id}
         `;
       }
+      if (patch.expectedComments !== undefined) {
+        const locked = await tx.$queryRaw`
+          SELECT "id"
+          FROM "workflows"."vulnerabilities"
+          WHERE "id" = ${id}
+          FOR UPDATE
+        `;
+        if (locked.length !== 1) return { commentConflict: true };
+        const current = await tx.vulnerability.findUnique({
+          where: { id },
+          select: { comments: true },
+        });
+        const currentComments = current?.comments || '';
+        const replacementComments = patch.data.comments || '';
+        if (
+          currentComments !== patch.expectedComments ||
+          !preservesProtectedReverseExportMarkers(currentComments, replacementComments)
+        ) {
+          return { commentConflict: true };
+        }
+      }
       if (Object.keys(patch.data).length > 0) {
         return tx.vulnerability.update({
           where: { id },
@@ -168,6 +208,9 @@ router.patch('/:id', async (req, res, next) => {
     });
     if (updated.identityConflict) {
       return res.status(409).json({ error: 'Vulnerability identity changed; append rejected.' });
+    }
+    if (updated.commentConflict) {
+      return res.status(409).json({ error: 'Vulnerability comments changed; replacement rejected.' });
     }
     res.json({
       id: updated.id.toString(),
