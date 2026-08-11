@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 
 import { prismaUniqueConflict } from '../src/app.js';
 import { DEFAULT_WORKFLOW_NAMES } from '../src/lib/defaultWorkflows.js';
-import { validateScanJobLimit, ValidationError } from '../src/lib/validation.js';
+import { validateScanJobLimit, validateWorkflowBudget, ValidationError } from '../src/lib/validation.js';
 import { agentSkillMutationState, countAgentSkillScanUsage } from '../src/routes/agentSkills.js';
 import { summarizeCanonicalFindings } from '../src/routes/overview.js';
 import { countPostScriptScanUsage, postScriptMutationState } from '../src/routes/postScripts.js';
@@ -551,6 +551,91 @@ test('scan job limits are validated and can be raised or removed', async () => {
   await patchScanIfPresent(tx, 8n, { jobLimit: 250 }, { assertAvailable: async () => {} });
   await patchScanIfPresent(tx, 8n, { jobLimit: null }, { assertAvailable: async () => {} });
   assert.deepEqual(writes, [{ jobLimit: 250 }, { jobLimit: null }]);
+});
+
+test('workflow budgets are strict and coupled to the scan job limit', () => {
+  const budget = {
+    schema: 'open-kritt.workflow-budget/v1',
+    max_workflow_depth: 3,
+    max_initial_lineages: 12,
+  };
+
+  assert.deepEqual(validateWorkflowBudget(budget, 12), budget);
+  assert.throws(
+    () => validateWorkflowBudget({ ...budget, schema: 'open-kritt.workflow-budget/v2' }, 12),
+    ValidationError
+  );
+  assert.throws(() => validateWorkflowBudget({ ...budget, max_workflow_depth: true }, 12), ValidationError);
+  assert.throws(() => validateWorkflowBudget({ ...budget, extra: true }, 12), ValidationError);
+  assert.throws(() => validateWorkflowBudget(budget, 13), ValidationError);
+  assert.throws(() => validateWorkflowBudget(budget, null), ValidationError);
+});
+
+test('workflow budget job limits cannot be raised or removed by runtime patch', async () => {
+  const writes = [];
+  const budget = {
+    schema: 'open-kritt.workflow-budget/v1',
+    max_workflow_depth: 3,
+    max_initial_lineages: 12,
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => ({
+        id: 8n,
+        status: 'stopped',
+        jobLimit: 12,
+        configuration: { workflow_budget: budget },
+      }),
+      update: async ({ data }) => writes.push(data),
+    },
+  };
+
+  await assert.rejects(() => patchScanIfPresent(tx, 8n, { jobLimit: 13 }), ValidationError);
+  await assert.rejects(() => patchScanIfPresent(tx, 8n, { jobLimit: null }), ValidationError);
+  assert.deepEqual(writes, []);
+});
+
+test('runtime patch rejects a persisted noncanonical workflow budget alias', async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => ({
+        id: 8n,
+        status: 'stopped',
+        jobLimit: 2,
+        configuration: {
+          workflowBudget: {
+            schema: 'open-kritt.workflow-budget/v1',
+            max_workflow_depth: 1,
+            max_initial_lineages: 2,
+          },
+        },
+      }),
+      update: async () => assert.fail('noncanonical workflow budget must not be mutated'),
+    },
+  };
+
+  await assert.rejects(
+    () => patchScanIfPresent(tx, 8n, { jobLimit: null, status: 'pending' }, { assertAvailable: async () => {} }),
+    (error) =>
+      error instanceof ValidationError && error.errors.some((item) => item.field === 'configuration.workflowBudget')
+  );
+});
+
+test('runtime patch rejects a persisted non-object scan configuration', async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    scan: {
+      findUnique: async () => ({ id: 8n, status: 'stopped', jobLimit: null, configuration: [] }),
+      update: async () => assert.fail('non-object configuration must not be mutated'),
+    },
+  };
+
+  await assert.rejects(
+    () => patchScanIfPresent(tx, 8n, { status: 'pending' }, { assertAvailable: async () => {} }),
+    (error) => error instanceof ValidationError && error.errors.some((item) => item.field === 'configuration')
+  );
 });
 
 test('scan creation locks configured workflows, post-scripts, and agent skills in stable order', async () => {

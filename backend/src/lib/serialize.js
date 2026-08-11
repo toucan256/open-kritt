@@ -312,6 +312,7 @@ export function serializeScan(
     repoScope: scan.repoScope,
     dependencies: serializeDependencies(scan),
     configuration: scan.configuration || {},
+    sourceAttestation: scan.sourceAttestation ?? null,
     model: scan.model,
     modelProvider: scan.modelProvider ?? null,
     harness: scan.harness,

@@ -150,7 +150,8 @@ model Scan {
   dependencies  String[] @map("dependencies") // legacy: addresses/names of each dependency
   dependenciesDetail Json? @map("dependencies_detail") // [{ kind, repo_full, commit_sha }]
   agentSkillIds BigInt[] @default([]) @map("agent_skill_ids")
-  configuration Json     @map("configuration")
+  configuration    Json  @map("configuration")
+  sourceAttestation Json? @map("source_attestation")
   model         String
   modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter
   harness       String

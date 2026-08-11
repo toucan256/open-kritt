@@ -29,6 +29,7 @@ from .repository import (
     normalize_repo_full,
     resolve_remote_head,
     snapshot_local_repo,
+    verify_source_attestation,
 )
 from .runtime_config import runtime_int, runtime_value
 from .workspace_snapshots import (
@@ -86,6 +87,7 @@ class DependencyWorkspace:
     setup_timings_ms: dict[str, int] | None = None
     source_repo_dir: str | None = None
     runner_image: str | None = None
+    source_attestation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class PreparedWorkspaceTree:
     manifest: dict[str, Any]
     layout: str
     manifest_json: str
+    source_attestation: dict[str, Any] | None = None
 
 
 class _ProviderAccountGate:
@@ -353,7 +356,10 @@ def prepare_dependency_workspace(
         model_provider=model_provider,
     )
     timings["job_home_ms"] = _elapsed_ms(home_started)
-    if use_snapshot_image:
+    requires_source_attestation = (
+        isinstance(scan.get("configuration"), dict) and scan["configuration"].get("source_attestation") is not None
+    )
+    if use_snapshot_image and not requires_source_attestation:
         try:
             prepared = _prepare_dependency_snapshot_workspace(
                 workspace=workspace,
@@ -423,6 +429,7 @@ def prepare_dependency_workspace(
         layout=prepared_tree.layout,
         manifest_json=prepared_tree.manifest_json,
         setup_timings_ms=timings,
+        source_attestation=prepared_tree.source_attestation,
     )
 
 
@@ -544,10 +551,16 @@ def _prepare_dependency_workspace_tree(
         scan_id=scan.get("id"),
     )
     _add_timing(timings, "checkout_cache_ms", _elapsed_ms(cache_started))
+    source_attestation = None
+    if primary_kind == "local":
+        source_attestation = verify_source_attestation(primary_cache_checkout, scan)
 
     copy_started = time.perf_counter()
     if primary_kind == "local":
         repo_dir, checked_out_commit = copy_local_snapshot(primary_cache_checkout, str(target_dir))
+        copied_attestation = verify_source_attestation(repo_dir, scan)
+        if copied_attestation != source_attestation:
+            raise RuntimeError("local repository source attestation changed while preparing workspace")
     else:
         repo_dir, checked_out_commit = copy_checkout(
             primary_cache_checkout,
@@ -622,6 +635,7 @@ def _prepare_dependency_workspace_tree(
         manifest=manifest,
         layout=layout,
         manifest_json=manifest_json,
+        source_attestation=source_attestation,
     )
 
 
@@ -985,6 +999,7 @@ def _with_display_workspace_paths(
         manifest=manifest,
         layout=layout,
         manifest_json=manifest_json,
+        source_attestation=prepared.source_attestation,
     )
 
 
