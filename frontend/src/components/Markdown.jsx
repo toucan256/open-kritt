@@ -124,13 +124,7 @@ function inline(text) {
         const href = lm[2];
         const isSafe = /^(?:https?:\/\/|#|\/)/.test(href);
         out.push(
-          <a
-            key={key++}
-            href={isSafe ? href : ''}
-            target="_blank"
-            rel="noreferrer"
-            style={linkStyle}
-          >
+          <a key={key++} href={isSafe ? href : ''} target="_blank" rel="noreferrer" style={linkStyle}>
             {lm[1]}
           </a>
         );

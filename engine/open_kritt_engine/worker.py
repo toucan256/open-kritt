@@ -1075,12 +1075,15 @@ class Worker:
                 else:
                     completed = self.db.load_completed_metadata(conn, scan_id)
                     claimed = self.db.load_claimed_metadata(conn, scan_id)
+                    load_started_metadata = getattr(self.db, "load_started_metadata", None)
+                    started = load_started_metadata(conn, scan_id) if callable(load_started_metadata) else claimed
                     step_results = self.db.load_step_results(conn, scan_id)
                     jobs = build_pending_jobs(
                         scan=current,
                         workflow=workflow,
                         completed=completed,
                         claimed=claimed,
+                        started=started,
                         step_results=step_results,
                     )
                     conn.commit()
@@ -1244,6 +1247,16 @@ class Worker:
                             )
                             conn.commit()
                             return True
+                        source_attestation = getattr(prepared, "source_attestation", None)
+                        if source_attestation is not None:
+                            record_source_attestation = getattr(self.db, "record_scan_source_attestation", None)
+                            if not callable(record_source_attestation):
+                                raise RuntimeError("database does not support engine source attestation")
+                            record_source_attestation(
+                                conn,
+                                scan_id=int(scan["id"]),
+                                source_attestation=source_attestation,
+                            )
                         self.db.update_metadata(
                             conn,
                             metadata_id,

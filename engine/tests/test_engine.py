@@ -2067,6 +2067,225 @@ def test_queue_repeats_each_task_before_feeding_accumulated_results_downstream()
     assert [(j.step.id, j.state.prev_id, j.state.repeat_run) for j in pending] == [(2, 11, 1), (2, 10, 2)]
 
 
+def test_queue_workflow_budget_stops_before_disallowed_depth():
+    workflow = Workflow(
+        id=3,
+        name="wf",
+        steps=(
+            step(1, 0),
+            step(2, 1),
+            step(3, 2, is_last=True),
+        ),
+    )
+    sc = {
+        **scan(
+            {
+                "workflow_budget": {
+                    "schema": "open-kritt.workflow-budget/v1",
+                    "max_workflow_depth": 2,
+                    "max_initial_lineages": 6,
+                }
+            }
+        ),
+        "job_limit": 6,
+        "jobs_started": 0,
+    }
+    completed = {(1, 0, None, 1)}
+    results = {
+        (1, 0, None, 1): [
+            StepResultRow(id=10, step_id=1, prev_id=0, prev_table=None, repeat_run=1, json_answer={"thing": "x"})
+        ]
+    }
+
+    pending = build_pending_jobs(scan=sc, workflow=workflow, completed=completed, step_results=results)
+    assert [(job.step.id, job.depth) for job in pending] == [(2, 1)]
+
+    completed.add((2, 10, "workflows.step_results", 1))
+    results[(2, 10, "workflows.step_results", 1)] = [
+        StepResultRow(
+            id=20,
+            step_id=2,
+            prev_id=10,
+            prev_table="workflows.step_results",
+            repeat_run=1,
+            json_answer={"thing": "y"},
+        )
+    ]
+    assert build_pending_jobs(scan=sc, workflow=workflow, completed=completed, step_results=results) == []
+
+
+def test_queue_workflow_budget_caps_pending_jobs_to_remaining_lineages():
+    workflow = Workflow(
+        id=3,
+        name="wf",
+        steps=(
+            step(1, 0, is_last=True),
+            step(2, 0, is_last=True),
+            step(3, 0, is_last=True),
+        ),
+    )
+    budget = {
+        "schema": "open-kritt.workflow-budget/v1",
+        "max_workflow_depth": 1,
+        "max_initial_lineages": 2,
+    }
+    sc = {
+        **scan({"workflow_budget": budget}),
+        "job_limit": 2,
+        "jobs_started": 1,
+    }
+
+    pending = build_pending_jobs(scan=sc, workflow=workflow, completed=set(), step_results={})
+    assert [job.step.id for job in pending] == [1]
+
+    # Preserve one unclaimed sentinel so the atomic DB claim records a
+    # job_limit_reached stop instead of treating a truncated workflow as done.
+    exhausted = {**sc, "jobs_started": 2}
+    pending = build_pending_jobs(scan=exhausted, workflow=workflow, completed=set(), step_results={})
+    assert [job.step.id for job in pending] == [1]
+
+
+def test_queue_workflow_budget_prioritizes_started_retries_when_lineages_are_exhausted():
+    workflow = Workflow(
+        id=4,
+        name="wf",
+        steps=(
+            step(1, 0, is_last=True),
+            step(2, 0, is_last=True),
+        ),
+    )
+    budget = {
+        "schema": "open-kritt.workflow-budget/v1",
+        "max_workflow_depth": 1,
+        "max_initial_lineages": 1,
+    }
+    sc = {
+        **scan({"workflow_budget": budget}),
+        "job_limit": 1,
+        "jobs_started": 1,
+    }
+
+    pending = build_pending_jobs(
+        scan=sc,
+        workflow=workflow,
+        completed=set(),
+        started={(2, 0, None, 1)},
+        step_results={},
+    )
+
+    assert [job.step.id for job in pending] == [2]
+
+
+@pytest.mark.parametrize(
+    ("budget", "job_limit", "jobs_started"),
+    [
+        ({"schema": "open-kritt.workflow-budget/v1", "max_workflow_depth": 2}, 6, 0),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v2",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": 6,
+            },
+            6,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": True,
+                "max_initial_lineages": 6,
+            },
+            6,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": 6,
+                "extra": True,
+            },
+            6,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": True,
+            },
+            6,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": 6,
+            },
+            None,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": 6,
+            },
+            7,
+            0,
+        ),
+        (
+            {
+                "schema": "open-kritt.workflow-budget/v1",
+                "max_workflow_depth": 2,
+                "max_initial_lineages": 6,
+            },
+            6,
+            7,
+        ),
+    ],
+)
+def test_queue_workflow_budget_rejects_malformed_or_amplified_policy(budget, job_limit, jobs_started):
+    workflow = Workflow(id=3, name="wf", steps=(step(1, 0, is_last=True),))
+    sc = {
+        **scan({"workflow_budget": budget}),
+        "job_limit": job_limit,
+        "jobs_started": jobs_started,
+    }
+
+    with pytest.raises(ValueError, match="workflow budget"):
+        build_pending_jobs(scan=sc, workflow=workflow, completed=set(), step_results={})
+
+
+def test_queue_workflow_budget_rejects_noncanonical_camel_case_alias():
+    workflow = Workflow(id=4, name="wf", steps=(step(1, 0, is_last=True),))
+    sc = {
+        **scan(
+            {
+                "workflowBudget": {
+                    "schema": "open-kritt.workflow-budget/v1",
+                    "max_workflow_depth": 1,
+                    "max_initial_lineages": 2,
+                }
+            }
+        ),
+        "job_limit": 2,
+        "jobs_started": 0,
+    }
+
+    with pytest.raises(ValueError, match="non-canonical workflow budget key"):
+        build_pending_jobs(scan=sc, workflow=workflow, completed=set(), step_results={})
+
+
+def test_queue_rejects_non_object_scan_configuration():
+    workflow = Workflow(id=5, name="wf", steps=(step(1, 0, is_last=True),))
+    sc = {**scan(), "configuration": [{"workflow_budget": {}}]}
+
+    with pytest.raises(ValueError, match="scan configuration must be an object"):
+        build_pending_jobs(scan=sc, workflow=workflow, completed=set(), step_results={})
+
+
 def test_database_load_prior_repeat_results_keeps_every_earlier_step_output():
     captured = {}
 
@@ -2094,8 +2313,8 @@ def test_database_load_prior_repeat_results_keeps_every_earlier_step_output():
         {"repeat_run": 1, "result": {"item": "a"}},
         {"repeat_run": 2, "result": {"item": "b"}},
     ]
-    assert "workflows.step_results" in captured["query"]
-    assert "workflows.vulnerabilities" in captured["query"]
+    assert "r.prev_table IS NOT DISTINCT FROM" in captured["query"]
+    assert "v.prev_table IS NOT DISTINCT FROM" in captured["query"]
     assert captured["params"] == {
         "scan_id": 7,
         "step_id": 3,
@@ -2103,8 +2322,67 @@ def test_database_load_prior_repeat_results_keeps_every_earlier_step_output():
         "prev_table": "workflows.step_results",
         "repeat_run": 3,
     }
-    assert "r.prev_table IS NOT DISTINCT FROM" in captured["query"]
-    assert "v.prev_table IS NOT DISTINCT FROM" in captured["query"]
+
+
+def test_database_load_started_metadata_includes_failed_lineages_without_status_filter():
+    captured = {}
+
+    class StartedMetadataConn:
+        def execute(self, query, params):
+            captured["query"] = query
+            captured["params"] = params
+            return SimpleNamespace(
+                fetchall=lambda: [
+                    {
+                        "step_id": 2,
+                        "prev_id": 0,
+                        "prev_table": None,
+                        "repeat_run": 1,
+                    }
+                ]
+            )
+
+    started = Database("").load_started_metadata(StartedMetadataConn(), 7)
+
+    assert started == {(2, 0, None, 1)}
+    assert "status = ANY" not in captured["query"]
+    assert captured["params"] == (7,)
+
+
+def test_database_source_attestation_is_first_write_idempotent_and_mismatch_closed():
+    attestation = {
+        "schema": "open-kritt.source-attestation/v1",
+        "repository": "example",
+        "local_repositories_root": "/local_repos",
+        "source_tree_sha256": "a" * 64,
+        "file_count": 1,
+        "total_bytes": 8,
+    }
+
+    class SourceAttestationConn:
+        def __init__(self, current):
+            self.current = current
+            self.updates = []
+
+        def execute(self, query, params):
+            if "SELECT source_attestation" in query:
+                return SimpleNamespace(fetchone=lambda: {"source_attestation": self.current})
+            self.updates.append((query, params))
+            return SimpleNamespace()
+
+    database = Database("")
+    first = SourceAttestationConn(None)
+    database.record_scan_source_attestation(first, scan_id=7, source_attestation=attestation)
+    assert len(first.updates) == 1
+
+    repeated = SourceAttestationConn(attestation)
+    database.record_scan_source_attestation(repeated, scan_id=7, source_attestation=attestation)
+    assert repeated.updates == []
+
+    mismatch = SourceAttestationConn({**attestation, "source_tree_sha256": "b" * 64})
+    with pytest.raises(RuntimeError, match="changed between workspaces"):
+        database.record_scan_source_attestation(mismatch, scan_id=7, source_attestation=attestation)
+    assert mismatch.updates == []
 
 
 class FakeConn:

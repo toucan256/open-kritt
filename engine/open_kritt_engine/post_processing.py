@@ -550,6 +550,16 @@ class PostProcessor:
             final_prompt = "\n\n".join(part for part in prompt_parts if part)
             thinking_effort = post_processing_thinking_effort(scan)
             with self.db.connect() as conn:
+                source_attestation = getattr(prepared, "source_attestation", None)
+                if source_attestation is not None:
+                    record_source_attestation = getattr(self.db, "record_scan_source_attestation", None)
+                    if not callable(record_source_attestation):
+                        raise RuntimeError("database does not support engine source attestation")
+                    record_source_attestation(
+                        conn,
+                        scan_id=int(scan["id"]),
+                        source_attestation=source_attestation,
+                    )
                 self.db.update_post_process_metadata(
                     conn,
                     metadata_id,
