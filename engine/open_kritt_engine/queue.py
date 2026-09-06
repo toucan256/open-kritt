@@ -5,6 +5,60 @@ from typing import Any
 from .models import Job, State, StepResultRow, Workflow
 from .prompting import scan_context
 
+WORKFLOW_BUDGET_SCHEMA = "open-kritt.workflow-budget/v1"
+WORKFLOW_BUDGET_KEYS = frozenset({"schema", "max_workflow_depth", "max_initial_lineages"})
+MAX_WORKFLOW_DEPTH = 64
+MAX_INITIAL_LINEAGES = 1_000_000
+
+
+def _workflow_budget_integer(value, *, field: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > maximum:
+        raise ValueError(f"workflow budget {field} must be an integer between 1 and {maximum}")
+    return value
+
+
+def workflow_budget(scan: dict[str, Any]) -> dict[str, int | str] | None:
+    configuration = scan.get("configuration")
+    if configuration is None:
+        return None
+    if not isinstance(configuration, dict):
+        raise ValueError("scan configuration must be an object")
+    if "workflowBudget" in configuration:
+        raise ValueError("scan configuration uses the non-canonical workflow budget key workflowBudget")
+    if "workflow_budget" not in configuration:
+        return None
+    budget = configuration["workflow_budget"]
+    if not isinstance(budget, dict):
+        raise ValueError("workflow budget must be an object")
+    if set(budget) != WORKFLOW_BUDGET_KEYS:
+        raise ValueError("workflow budget fields do not match the v1 contract")
+    if budget.get("schema") != WORKFLOW_BUDGET_SCHEMA:
+        raise ValueError(f"workflow budget schema must be {WORKFLOW_BUDGET_SCHEMA}")
+
+    max_workflow_depth = _workflow_budget_integer(
+        budget.get("max_workflow_depth"),
+        field="max_workflow_depth",
+        maximum=MAX_WORKFLOW_DEPTH,
+    )
+    max_initial_lineages = _workflow_budget_integer(
+        budget.get("max_initial_lineages"),
+        field="max_initial_lineages",
+        maximum=MAX_INITIAL_LINEAGES,
+    )
+    job_limit = scan.get("job_limit", scan.get("jobLimit"))
+    if job_limit != max_initial_lineages:
+        raise ValueError("workflow budget max_initial_lineages must equal the scan job limit")
+    jobs_started = scan.get("jobs_started", scan.get("jobsStarted", 0))
+    if isinstance(jobs_started, bool) or not isinstance(jobs_started, int) or jobs_started < 0:
+        raise ValueError("workflow budget requires a non-negative integer jobs_started counter")
+    if jobs_started > max_initial_lineages:
+        raise ValueError("workflow budget cumulative jobs_started exceeds max_initial_lineages")
+    return {
+        "schema": WORKFLOW_BUDGET_SCHEMA,
+        "max_workflow_depth": max_workflow_depth,
+        "max_initial_lineages": max_initial_lineages,
+    }
+
 
 def repeat_runs(scan: dict[str, Any]) -> int:
     configuration = scan.get("configuration") or {}
@@ -174,16 +228,20 @@ def build_pending_jobs(
     completed: set[tuple[int, int, str | None, int]],
     step_results: dict[tuple[int, int, str | None, int], list[StepResultRow]],
     claimed: set[tuple[int, int, str | None, int]] | None = None,
+    started: set[tuple[int, int, str | None, int]] | None = None,
 ) -> list[Job]:
     validate_workflow_bindings(workflow)
     pending: list[Job] = []
     if claimed is None:
         claimed = completed
+    if started is None:
+        started = claimed
+    budget = workflow_budget(scan)
     runs = repeat_runs(scan)
     states = [State(prev_id=0, prev_table=None, repeat_run=1, context=scan_context(scan))]
     previous_depth_complete = True
 
-    for depth in workflow.depths:
+    for depth in (depth for depth in workflow.depths if budget is None or depth < int(budget["max_workflow_depth"])):
         steps = workflow.steps_at_depth(depth)
         next_states: list[State] = []
         depth_complete = previous_depth_complete
@@ -226,7 +284,7 @@ def build_pending_jobs(
     step_ids = {job.step.id for job in pending}
     explicit_orders = {step_id: configured_pending_lineage_order(scan, step_id) for step_id in step_ids}
     shuffle_step_ids = configured_step_ids(scan, "shuffle_pending_step_ids")
-    return sorted(
+    ordered_pending = sorted(
         pending,
         key=lambda job: (
             -job.depth,
@@ -240,3 +298,15 @@ def build_pending_jobs(
             ),
         ),
     )
+    if budget is None or not ordered_pending:
+        return ordered_pending
+    jobs_started = int(scan.get("jobs_started", scan.get("jobsStarted", 0)))
+    remaining_lineages = int(budget["max_initial_lineages"]) - jobs_started
+    retry_pending = [job for job in ordered_pending if metadata_key(job.step.id, job.state) in started]
+    new_pending = [job for job in ordered_pending if metadata_key(job.step.id, job.state) not in started]
+    if retry_pending:
+        return retry_pending + new_pending[:remaining_lineages]
+    # Keep one sentinel when exhausted so claim_step_metadata can atomically set
+    # job_limit_reached instead of letting the worker treat a truncated workflow
+    # as completed and advance to post-processing.
+    return new_pending[: max(1, remaining_lineages)]

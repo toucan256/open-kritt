@@ -224,6 +224,98 @@ test('validateScan keeps post-processing thinking effort separate from workflow 
   });
 });
 
+test('validateScan preserves only a valid workflow budget coupled to jobLimit', () => {
+  const base = {
+    workflowId: '1',
+    postScriptId: '1',
+    repo_kind: 'remote',
+    repo_full: 'https://github.com/org/repo',
+    commit_sha: 'HEAD',
+    model: 'test-model',
+    model_provider: 'codex',
+    harness: 'codex',
+    thinking_effort: 'high',
+    severity_ranker: 'Rank by impact.',
+    jobLimit: 12,
+    configuration: {
+      workflow_budget: {
+        schema: 'open-kritt.workflow-budget/v1',
+        max_workflow_depth: 3,
+        max_initial_lineages: 12,
+      },
+    },
+  };
+
+  assert.deepEqual(validateScan(base).configuration.workflow_budget, base.configuration.workflow_budget);
+  assert.throws(
+    () => validateScan({ ...base, jobLimit: 13 }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'configuration.workflow_budget.max_initial_lineages')
+  );
+  assert.throws(
+    () => validateScan({ ...base, jobLimit: null }),
+    (error) =>
+      error instanceof ValidationError &&
+      error.errors.some((item) => item.field === 'configuration.workflow_budget.max_initial_lineages')
+  );
+  assert.throws(
+    () =>
+      validateScan({
+        ...base,
+        configuration: { workflowBudget: base.configuration.workflow_budget },
+      }),
+    (error) =>
+      error instanceof ValidationError && error.errors.some((item) => item.field === 'configuration.workflowBudget')
+  );
+  assert.throws(
+    () => validateScan({ ...base, configuration: [{ workflow_budget: base.configuration.workflow_budget }] }),
+    (error) => error instanceof ValidationError && error.errors.some((item) => item.field === 'configuration')
+  );
+});
+
+test('validateScan preserves only canonical local source attestation', () => {
+  const sourceAttestation = {
+    schema: 'open-kritt.source-attestation/v1',
+    repository: 'ranked-target',
+    local_repositories_root: '/run/open-kritt-secrets/local-repos',
+    source_tree_sha256: 'a'.repeat(64),
+    file_count: 3,
+    total_bytes: 120,
+  };
+  const base = {
+    workflowId: '1',
+    postScriptId: '1',
+    repo_kind: 'local',
+    repo_full: 'ranked-target',
+    model: 'test-model',
+    model_provider: 'codex',
+    harness: 'codex',
+    thinking_effort: 'high',
+    severity_ranker: 'Rank by impact.',
+    configuration: { source_attestation: sourceAttestation },
+  };
+
+  assert.deepEqual(validateScan(base).configuration.source_attestation, sourceAttestation);
+  for (const invalid of [
+    { ...sourceAttestation, repository: 'substituted-target' },
+    { ...sourceAttestation, file_count: true },
+    { ...sourceAttestation, unknown: 'field' },
+  ]) {
+    assert.throws(() => validateScan({ ...base, configuration: { source_attestation: invalid } }), ValidationError);
+  }
+  assert.throws(
+    () => validateScan({ ...base, configuration: { sourceAttestation } }),
+    (error) =>
+      error instanceof ValidationError && error.errors.some((item) => item.field === 'configuration.sourceAttestation')
+  );
+  assert.throws(
+    () => validateScan({ ...base, dependencies: [{ kind: 'local', repo_full: 'dependency' }] }),
+    ValidationError
+  );
+  assert.throws(() => validateScan({ ...base, repo_kind: 'remote', repo_full: 'org/repo' }), ValidationError);
+});
+
 test('depth model overrides normalize complete tuples and enforce workflow depths', () => {
   assert.deepEqual(
     validateModelOverrides(

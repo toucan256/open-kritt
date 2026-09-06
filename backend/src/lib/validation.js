@@ -822,6 +822,19 @@ export function validateSeverityRanker(body) {
 // ----------------------------------------------------------------------------
 // Scan validation
 // ----------------------------------------------------------------------------
+export const WORKFLOW_BUDGET_SCHEMA = 'open-kritt.workflow-budget/v1';
+const WORKFLOW_BUDGET_KEYS = new Set(['schema', 'max_workflow_depth', 'max_initial_lineages']);
+export const SOURCE_ATTESTATION_SCHEMA = 'open-kritt.source-attestation/v1';
+const SOURCE_ATTESTATION_KEYS = new Set([
+  'schema',
+  'repository',
+  'local_repositories_root',
+  'source_tree_sha256',
+  'file_count',
+  'total_bytes',
+]);
+const MAX_WORKFLOW_DEPTH = 64;
+
 export function validateScanJobLimit(value, field = 'jobLimit') {
   if (value === undefined || value === null || `${value}`.trim() === '') return null;
   const text = typeof value === 'number' || typeof value === 'string' ? `${value}`.trim() : '';
@@ -833,6 +846,96 @@ export function validateScanJobLimit(value, field = 'jobLimit') {
     throw new ValidationError([{ field, message: 'Maximum model jobs must be between 1 and 1,000,000.' }]);
   }
   return limit;
+}
+
+export function validateWorkflowBudget(value, jobLimit, field = 'configuration.workflow_budget') {
+  const errors = [];
+  const push = (suffix, message) => errors.push({ field: suffix ? `${field}.${suffix}` : field, message });
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError([{ field, message: 'Workflow budget must be an object.' }]);
+  }
+
+  const keys = Object.keys(value);
+  const unexpected = keys.filter((key) => !WORKFLOW_BUDGET_KEYS.has(key));
+  const missing = [...WORKFLOW_BUDGET_KEYS].filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  if (unexpected.length || missing.length) {
+    push('', 'Workflow budget fields must exactly match the v1 contract.');
+  }
+  if (value.schema !== WORKFLOW_BUDGET_SCHEMA) {
+    push('schema', `Workflow budget schema must be ${WORKFLOW_BUDGET_SCHEMA}.`);
+  }
+
+  const maxWorkflowDepth = value.max_workflow_depth;
+  if (!Number.isSafeInteger(maxWorkflowDepth) || maxWorkflowDepth < 1 || maxWorkflowDepth > MAX_WORKFLOW_DEPTH) {
+    push('max_workflow_depth', `Maximum workflow depth must be an integer between 1 and ${MAX_WORKFLOW_DEPTH}.`);
+  }
+  const maxInitialLineages = value.max_initial_lineages;
+  if (!Number.isSafeInteger(maxInitialLineages) || maxInitialLineages < 1 || maxInitialLineages > 1_000_000) {
+    push('max_initial_lineages', 'Maximum initial lineages must be an integer between 1 and 1,000,000.');
+  }
+  if (Number.isSafeInteger(maxInitialLineages) && jobLimit !== maxInitialLineages) {
+    push('max_initial_lineages', 'Maximum initial lineages must equal jobLimit.');
+  }
+  if (errors.length) throw new ValidationError(errors);
+
+  return {
+    schema: WORKFLOW_BUDGET_SCHEMA,
+    max_workflow_depth: maxWorkflowDepth,
+    max_initial_lineages: maxInitialLineages,
+  };
+}
+
+export function validateSourceAttestation(
+  value,
+  { repoKind, repoFull, dependencies },
+  field = 'configuration.source_attestation'
+) {
+  const errors = [];
+  const push = (suffix, message) => errors.push({ field: suffix ? `${field}.${suffix}` : field, message });
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError([{ field, message: 'Source attestation must be an object.' }]);
+  }
+  const keys = Object.keys(value);
+  if (
+    keys.some((key) => !SOURCE_ATTESTATION_KEYS.has(key)) ||
+    [...SOURCE_ATTESTATION_KEYS].some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+  ) {
+    push('', 'Source attestation fields must exactly match the v1 contract.');
+  }
+  if (value.schema !== SOURCE_ATTESTATION_SCHEMA) {
+    push('schema', `Source attestation schema must be ${SOURCE_ATTESTATION_SCHEMA}.`);
+  }
+  if (repoKind !== 'local') push('', 'Source attestation requires a local repository scan.');
+  if (value.repository !== repoFull)
+    push('repository', 'Source attestation repository must equal the scan repository.');
+  if (Array.isArray(dependencies) && dependencies.length > 0) {
+    push('', 'Source-attested scans must not include dependency repositories.');
+  }
+  if (
+    typeof value.local_repositories_root !== 'string' ||
+    !value.local_repositories_root.startsWith('/') ||
+    value.local_repositories_root.includes('/../') ||
+    value.local_repositories_root.endsWith('/..')
+  ) {
+    push('local_repositories_root', 'Engine local repository root must be an absolute normalized path.');
+  }
+  if (typeof value.source_tree_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.source_tree_sha256)) {
+    push('source_tree_sha256', 'Source tree digest must be lowercase SHA-256.');
+  }
+  for (const key of ['file_count', 'total_bytes']) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 0) {
+      push(key, `${key} must be a non-negative integer.`);
+    }
+  }
+  if (errors.length) throw new ValidationError(errors);
+  return {
+    schema: SOURCE_ATTESTATION_SCHEMA,
+    repository: value.repository,
+    local_repositories_root: value.local_repositories_root,
+    source_tree_sha256: value.source_tree_sha256,
+    file_count: value.file_count,
+    total_bytes: value.total_bytes,
+  };
 }
 
 // Normalize + validate a single repo reference (the scan target or a dependency).
@@ -926,6 +1029,65 @@ export function validateScan(body, { localNames = null } = {}) {
       configuration = JSON.parse(body.configuration);
     } catch {
       push('configuration', 'Configuration is not valid JSON.');
+    }
+  }
+  if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) {
+    push('configuration', 'Configuration must be a JSON object.');
+    configuration = {};
+  }
+  if (
+    configuration &&
+    typeof configuration === 'object' &&
+    !Array.isArray(configuration) &&
+    Object.prototype.hasOwnProperty.call(configuration, 'workflowBudget')
+  ) {
+    push('configuration.workflowBudget', 'Use the canonical configuration.workflow_budget key for a workflow budget.');
+  }
+  if (
+    configuration &&
+    typeof configuration === 'object' &&
+    !Array.isArray(configuration) &&
+    Object.prototype.hasOwnProperty.call(configuration, 'sourceAttestation')
+  ) {
+    push(
+      'configuration.sourceAttestation',
+      'Use the canonical configuration.source_attestation key for source attestation.'
+    );
+  }
+  if (
+    configuration &&
+    typeof configuration === 'object' &&
+    !Array.isArray(configuration) &&
+    Object.prototype.hasOwnProperty.call(configuration, 'workflow_budget')
+  ) {
+    try {
+      configuration = {
+        ...configuration,
+        workflow_budget: validateWorkflowBudget(configuration.workflow_budget, jobLimit),
+      };
+    } catch (error) {
+      if (error instanceof ValidationError) errors.push(...error.errors);
+      else throw error;
+    }
+  }
+  if (
+    configuration &&
+    typeof configuration === 'object' &&
+    !Array.isArray(configuration) &&
+    Object.prototype.hasOwnProperty.call(configuration, 'source_attestation')
+  ) {
+    try {
+      configuration = {
+        ...configuration,
+        source_attestation: validateSourceAttestation(configuration.source_attestation, {
+          repoKind: target.kind,
+          repoFull: target.repoFull,
+          dependencies,
+        }),
+      };
+    } catch (error) {
+      if (error instanceof ValidationError) errors.push(...error.errors);
+      else throw error;
     }
   }
   const postProcessingInput = postProcessingRuntimeInput(body, configuration);

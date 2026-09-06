@@ -365,6 +365,34 @@ class Database:
     def load_scan(self, conn, scan_id: int) -> dict[str, Any] | None:
         return conn.execute("SELECT * FROM public.scans WHERE id = %s", (scan_id,)).fetchone()
 
+    def record_scan_source_attestation(
+        self,
+        conn,
+        *,
+        scan_id: int,
+        source_attestation: dict[str, Any],
+    ) -> None:
+        row = conn.execute(
+            "SELECT source_attestation FROM public.scans WHERE id = %s FOR UPDATE",
+            (scan_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"scan {scan_id} disappeared before source attestation")
+        current = row.get("source_attestation")
+        if current is None:
+            conn.execute(
+                """
+                UPDATE public.scans
+                SET source_attestation = %s::jsonb,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (_json(source_attestation), scan_id),
+            )
+            return
+        if current != source_attestation:
+            raise RuntimeError(f"scan {scan_id} source attestation changed between workspaces")
+
     def claim_logical_job_slot(
         self,
         conn,
@@ -733,33 +761,29 @@ class Database:
     def load_claimed_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
         return self.load_metadata_keys(conn, scan_id, ("completed", "running"))
 
+    def load_started_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
+        return self.load_metadata_keys(conn, scan_id, None)
+
     def load_attempted_metadata(self, conn, scan_id: int) -> set[tuple[int, int, str | None, int]]:
-        rows = conn.execute(
-            """
-            SELECT step_id, coalesce(prev_id, 0) AS prev_id, prev_table, coalesce(repeat_run, 1) AS repeat_run
-            FROM workflows.step_metadata
-            WHERE scan_id = %s
-              AND coalesce(kind, 'step') = 'step'
-            """,
-            (scan_id,),
-        ).fetchall()
-        return {
-            (_to_int(row["step_id"]), _to_int(row["prev_id"]), row["prev_table"], int(row["repeat_run"]))
-            for row in rows
-        }
+        return self.load_started_metadata(conn, scan_id)
 
     def load_metadata_keys(
-        self, conn, scan_id: int, statuses: tuple[str, ...]
+        self, conn, scan_id: int, statuses: tuple[str, ...] | None
     ) -> set[tuple[int, int, str | None, int]]:
+        status_clause = ""
+        params: tuple[Any, ...] = (scan_id,)
+        if statuses is not None:
+            status_clause = "AND status = ANY(%s)"
+            params = (scan_id, list(statuses))
         rows = conn.execute(
-            """
+            f"""
             SELECT step_id, coalesce(prev_id, 0) AS prev_id, prev_table, coalesce(repeat_run, 1) AS repeat_run
             FROM workflows.step_metadata
             WHERE scan_id = %s
-              AND status = ANY(%s)
+              {status_clause}
               AND coalesce(kind, 'step') = 'step'
             """,
-            (scan_id, list(statuses)),
+            params,
         ).fetchall()
         return {
             (_to_int(row["step_id"]), _to_int(row["prev_id"]), row["prev_table"], int(row["repeat_run"]))
