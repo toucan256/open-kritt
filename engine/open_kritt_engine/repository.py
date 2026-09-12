@@ -1,4 +1,6 @@
 import fcntl
+import hashlib
+import json
 import logging
 import os
 import re
@@ -16,6 +18,17 @@ _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 LOGGER = logging.getLogger("open_kritt_engine.repository")
 LOCAL_SNAPSHOT_REVISION = "LOCAL_SNAPSHOT"
+SOURCE_ATTESTATION_SCHEMA = "open-kritt.source-attestation/v1"
+SOURCE_ATTESTATION_KEYS = frozenset(
+    {
+        "schema",
+        "repository",
+        "local_repositories_root",
+        "source_tree_sha256",
+        "file_count",
+        "total_bytes",
+    }
+)
 GIT_ENV_KEYS = frozenset(
     {
         "PATH",
@@ -41,6 +54,143 @@ GIT_ENV_KEYS = frozenset(
 
 class RepoError(RuntimeError):
     pass
+
+
+def _source_attestation_integer(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RepoError(f"source attestation {field} must be a non-negative integer")
+    return value
+
+
+def expected_source_attestation(scan: dict) -> dict | None:
+    configuration = scan.get("configuration")
+    if configuration is None:
+        return None
+    if not isinstance(configuration, dict):
+        raise RepoError("scan configuration must be an object")
+    expected = configuration.get("source_attestation")
+    if expected is None:
+        return None
+    if not isinstance(expected, dict) or set(expected) != SOURCE_ATTESTATION_KEYS:
+        raise RepoError("source attestation fields do not match the v1 contract")
+    if expected.get("schema") != SOURCE_ATTESTATION_SCHEMA:
+        raise RepoError(f"source attestation schema must be {SOURCE_ATTESTATION_SCHEMA}")
+    if scan.get("repo_kind") != "local":
+        raise RepoError("source attestation requires a local repository scan")
+    if expected.get("repository") != scan.get("repo_full"):
+        raise RepoError("source attestation repository differs from the scan repository")
+    source_root = Path(os.getenv("LOCAL_REPOS_PATH") or "/local_repos").resolve(strict=True)
+    if expected.get("local_repositories_root") != str(source_root):
+        raise RepoError("source attestation local repository root differs from the engine root")
+    digest = expected.get("source_tree_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise RepoError("source attestation source tree digest is invalid")
+    _source_attestation_integer(expected.get("file_count"), "file_count")
+    _source_attestation_integer(expected.get("total_bytes"), "total_bytes")
+    return expected
+
+
+def source_tree_attestation(repo_dir: str, *, repository: str, local_repositories_root: str) -> dict:
+    root = Path(repo_dir).resolve(strict=True)
+    if not root.is_dir() or root.is_symlink():
+        raise RepoError("source attestation repository snapshot must be a directory")
+    files = []
+    total_bytes = 0
+    root_descriptor = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    try:
+        root_identity = os.fstat(root_descriptor)
+        for current, directories, names, directory_descriptor in os.fwalk(
+            ".",
+            topdown=True,
+            follow_symlinks=False,
+            dir_fd=root_descriptor,
+        ):
+            directories.sort()
+            names.sort()
+            for directory in directories:
+                metadata = os.stat(
+                    directory,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RepoError("source attestation repository contains a symbolic link")
+            for name in names:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=directory_descriptor,
+                )
+                try:
+                    opened_metadata = os.fstat(descriptor)
+                    if not stat.S_ISREG(opened_metadata.st_mode):
+                        raise RepoError("source attestation repository contains a non-regular file")
+                    digest = hashlib.sha256()
+                    size = 0
+                    while True:
+                        chunk = os.read(descriptor, 1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        size += len(chunk)
+                    current_metadata = os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        current_metadata.st_dev != opened_metadata.st_dev
+                        or current_metadata.st_ino != opened_metadata.st_ino
+                    ):
+                        raise RepoError("source attestation repository changed while being hashed")
+                finally:
+                    os.close(descriptor)
+                relative = (Path(current) / name).as_posix().removeprefix("./")
+                total_bytes += size
+                files.append(
+                    {
+                        "path": relative,
+                        "sha256": digest.hexdigest(),
+                        "size": size,
+                    }
+                )
+        current_root = os.stat(root, follow_symlinks=False)
+        if current_root.st_dev != root_identity.st_dev or current_root.st_ino != root_identity.st_ino:
+            raise RepoError("source attestation repository root changed while being hashed")
+    finally:
+        os.close(root_descriptor)
+    files.sort(key=lambda item: item["path"])
+    serialized = json.dumps(
+        files,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "schema": SOURCE_ATTESTATION_SCHEMA,
+        "repository": repository,
+        "local_repositories_root": local_repositories_root,
+        "source_tree_sha256": hashlib.sha256(serialized).hexdigest(),
+        "file_count": len(files),
+        "total_bytes": total_bytes,
+    }
+
+
+def verify_source_attestation(repo_dir: str, scan: dict) -> dict | None:
+    expected = expected_source_attestation(scan)
+    if expected is None:
+        return None
+    observed = source_tree_attestation(
+        repo_dir,
+        repository=scan["repo_full"],
+        local_repositories_root=expected["local_repositories_root"],
+    )
+    if observed != expected:
+        raise RepoError("engine local repository source attestation mismatch")
+    return observed
 
 
 def normalize_repo_full(repo_full: str) -> str:

@@ -149,7 +149,7 @@ services:
       CODEX_MODEL_PROVIDER: ${CODEX_MODEL_PROVIDER:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       # Where local repos live INSIDE the container (the host dir is bind-mounted here).
-      LOCAL_REPOS_PATH: /local_repos
+      LOCAL_REPOS_PATH: /run/open-kritt-secrets/local-repos
     depends_on:
       db:
         condition: service_healthy

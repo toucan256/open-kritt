@@ -298,6 +298,110 @@ test('lineage summary counts only the one-to-one tasks selected by bound routing
   });
 });
 
+test('lineage summary applies the engine workflow budget depth and lineage ceilings', () => {
+  const scan = {
+    configuration: {
+      workflow_budget: {
+        schema: 'open-kritt.workflow-budget/v1',
+        max_workflow_depth: 1,
+        max_initial_lineages: 1,
+      },
+    },
+    jobLimit: 1,
+    jobsStarted: 1,
+  };
+  const steps = [
+    { id: 10n, depth: 0, consumesAll: false, isLastStep: false },
+    { id: 20n, depth: 1, consumesAll: false, isLastStep: true },
+  ];
+  const metadata = [{ kind: 'step', status: 'completed', stepId: 10n, prevId: null, prevTable: null, repeatRun: 1 }];
+  const results = [{ id: 1n, stepId: 10n, prevId: null, prevTable: null, repeatRun: 1 }];
+
+  assert.deepEqual(summarizeExpectedWorkflowLineages(scan, steps, metadata, results), {
+    expectedLineages: 1,
+    completedLineages: 1,
+  });
+});
+
+test('lineage summary caps same-depth fan-out at the workflow lineage ceiling', () => {
+  const scan = {
+    configuration: {
+      workflow_budget: {
+        schema: 'open-kritt.workflow-budget/v1',
+        max_workflow_depth: 1,
+        max_initial_lineages: 2,
+      },
+    },
+    jobLimit: 2,
+    jobsStarted: 2,
+  };
+  const steps = [10n, 11n, 12n].map((id) => ({
+    id,
+    depth: 0,
+    consumesAll: false,
+    isLastStep: true,
+  }));
+  const metadata = steps.map((step) => ({
+    kind: 'step',
+    status: 'completed',
+    stepId: step.id,
+    prevId: null,
+    prevTable: null,
+    repeatRun: 1,
+  }));
+
+  assert.deepEqual(summarizeExpectedWorkflowLineages(scan, steps, metadata, []), {
+    expectedLineages: 2,
+    completedLineages: 2,
+  });
+});
+
+test('lineage summary rejects a workflow budget that drifted from the scan job limit', () => {
+  const scan = {
+    configuration: {
+      workflow_budget: {
+        schema: 'open-kritt.workflow-budget/v1',
+        max_workflow_depth: 1,
+        max_initial_lineages: 2,
+      },
+    },
+    jobLimit: 3,
+    jobsStarted: 0,
+  };
+
+  assert.throws(
+    () =>
+      summarizeExpectedWorkflowLineages(scan, [{ id: 10n, depth: 0, consumesAll: false, isLastStep: true }], [], []),
+    /workflow budget/i
+  );
+});
+
+test('lineage summary rejects a persisted noncanonical workflow budget alias', () => {
+  const scan = {
+    configuration: {
+      workflowBudget: {
+        schema: 'open-kritt.workflow-budget/v1',
+        max_workflow_depth: 1,
+        max_initial_lineages: 2,
+      },
+    },
+    jobLimit: 2,
+    jobsStarted: 0,
+  };
+
+  assert.throws(
+    () => summarizeExpectedWorkflowLineages(scan, [{ id: 10n, depth: 0 }], [], []),
+    /noncanonical workflow budget alias/i
+  );
+});
+
+test('lineage summary rejects a persisted non-object configuration', () => {
+  assert.throws(
+    () => summarizeExpectedWorkflowLineages({ configuration: [], jobLimit: null, jobsStarted: 0 }, [], [], []),
+    /scan configuration must be an object/i
+  );
+});
+
 test('configured post-scripts preserve primary-first order and remove duplicates', () => {
   assert.deepEqual(
     configuredPostScriptIds({
@@ -369,6 +473,14 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
         post_processing_harness: 'codex',
         post_processing_thinking_effort: 'max',
       },
+      sourceAttestation: {
+        schema: 'open-kritt.source-attestation/v1',
+        repository: 'stacks-network/stacks-core',
+        local_repositories_root: '/run/open-kritt-secrets/local-repos',
+        source_tree_sha256: 'a'.repeat(64),
+        file_count: 2,
+        total_bytes: 42,
+      },
       model: 'gpt-5.4',
       modelProvider: 'codex',
       harness: 'codex',
@@ -403,6 +515,14 @@ test('scan serialization distinguishes raw candidates from listed findings', () 
   );
 
   assert.equal(serialized.findings, 14);
+  assert.deepEqual(serialized.sourceAttestation, {
+    schema: 'open-kritt.source-attestation/v1',
+    repository: 'stacks-network/stacks-core',
+    local_repositories_root: '/run/open-kritt-secrets/local-repos',
+    source_tree_sha256: 'a'.repeat(64),
+    file_count: 2,
+    total_bytes: 42,
+  });
   assert.equal(serialized.rawCandidates, 18);
   assert.equal(serialized.duplicateFindings, 4);
   assert.equal(serialized.exploitable, 8);

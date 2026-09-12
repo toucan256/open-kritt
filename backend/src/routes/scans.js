@@ -7,6 +7,7 @@ import {
   validateScan,
   validateScanJobLimit,
   validateModelSelection,
+  validateWorkflowBudget,
   validateModelOverrides,
   validateProspectiveScanRuntimeSettings,
   ValidationError,
@@ -602,12 +603,44 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
   const existing = await tx.scan.findUnique({ where: { id: scanId } });
   if (!existing) return { kind: 'not-found' };
 
+  const rawConfiguration = existing.configuration;
+  if (
+    rawConfiguration !== null &&
+    rawConfiguration !== undefined &&
+    (typeof rawConfiguration !== 'object' || Array.isArray(rawConfiguration))
+  ) {
+    throw new ValidationError([{ field: 'configuration', message: 'Persisted scan configuration must be an object.' }]);
+  }
+  const configuration = rawConfiguration || {};
+  if (Object.prototype.hasOwnProperty.call(configuration, 'workflowBudget')) {
+    throw new ValidationError([
+      {
+        field: 'configuration.workflowBudget',
+        message: 'Persisted scan uses the noncanonical workflow budget alias.',
+      },
+    ]);
+  }
+  const workflowBudget = Object.prototype.hasOwnProperty.call(configuration, 'workflow_budget')
+    ? validateWorkflowBudget(configuration.workflow_budget, existing.jobLimit)
+    : null;
+
   const data = {};
   if (
     Object.prototype.hasOwnProperty.call(body, 'jobLimit') ||
     Object.prototype.hasOwnProperty.call(body, 'job_limit')
   ) {
-    data.jobLimit = validateScanJobLimit(body.jobLimit ?? body.job_limit);
+    const requestedJobLimit = validateScanJobLimit(body.jobLimit ?? body.job_limit);
+    if (workflowBudget !== null) {
+      if (requestedJobLimit !== workflowBudget.max_initial_lineages) {
+        throw new ValidationError([
+          {
+            field: 'jobLimit',
+            message: 'A workflow-budgeted scan has an immutable initial lineage ceiling.',
+          },
+        ]);
+      }
+    }
+    data.jobLimit = requestedJobLimit;
   }
   if (Object.prototype.hasOwnProperty.call(body, 'status')) {
     const status = body.status;

@@ -4,6 +4,7 @@
 import { prisma } from '../db.js';
 import { serializeWorkflow, serializeScan, timeAgo } from './serialize.js';
 import { isDefaultWorkflowName } from './defaultWorkflows.js';
+import { validateWorkflowBudget } from './validation.js';
 
 const PHASE_LABELS = {
   building_workspace: 'Building workspace',
@@ -188,6 +189,30 @@ function lineageKey(stepId, prevId, prevTable, repeatRun) {
 // concrete step/input task has its own sequential repeat series; its accumulated
 // output reaches the next depth only after all configured repeats complete.
 export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results) {
+  const rawConfiguration = scan?.configuration;
+  if (
+    rawConfiguration !== null &&
+    rawConfiguration !== undefined &&
+    (typeof rawConfiguration !== 'object' || Array.isArray(rawConfiguration))
+  ) {
+    throw new Error('Invalid workflow budget: scan configuration must be an object.');
+  }
+  const configuration = rawConfiguration || {};
+  if (Object.prototype.hasOwnProperty.call(configuration, 'workflowBudget')) {
+    throw new Error('Persisted scan uses a noncanonical workflow budget alias.');
+  }
+  let workflowBudget = null;
+  if (Object.prototype.hasOwnProperty.call(configuration, 'workflow_budget')) {
+    try {
+      workflowBudget = validateWorkflowBudget(configuration.workflow_budget, scan.jobLimit ?? scan.job_limit ?? null);
+    } catch (error) {
+      throw new Error('Invalid workflow budget on persisted scan.', { cause: error });
+    }
+    const jobsStarted = scan.jobsStarted ?? scan.jobs_started ?? 0;
+    if (!Number.isSafeInteger(jobsStarted) || jobsStarted < 0 || jobsStarted > workflowBudget.max_initial_lineages) {
+      throw new Error('Invalid workflow budget cumulative jobs-started counter.');
+    }
+  }
   const completed = new Set(
     metadata
       .filter((row) => (row.kind || 'step') === 'step' && row.status === 'completed')
@@ -200,7 +225,13 @@ export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results
     resultsByLineage.get(key).push(row);
   }
 
-  const depths = [...new Set(steps.map((step) => step.depth))].sort((a, b) => a - b);
+  const depths = [
+    ...new Set(
+      steps
+        .map((step) => step.depth)
+        .filter((depth) => workflowBudget === null || depth < workflowBudget.max_workflow_depth)
+    ),
+  ].sort((a, b) => a - b);
   const byDepth = new Map(depths.map((depth) => [depth, steps.filter((step) => step.depth === depth)]));
   const runs = Array.from({ length: repeatRuns(scan) }, (_, index) => index + 1);
   let states = [{ prevId: 0, prevTable: null, sourceStepId: null }];
@@ -250,6 +281,12 @@ export function summarizeExpectedWorkflowLineages(scan, steps, metadata, results
 
   let completedLineages = 0;
   for (const key of expected) if (completed.has(key)) completedLineages += 1;
+  if (workflowBudget !== null) {
+    return {
+      expectedLineages: Math.min(expected.size, workflowBudget.max_initial_lineages),
+      completedLineages: Math.min(completedLineages, workflowBudget.max_initial_lineages),
+    };
+  }
   return { expectedLineages: expected.size, completedLineages };
 }
 

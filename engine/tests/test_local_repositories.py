@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ from open_kritt_engine.repository import (
     RepoError,
     copy_local_snapshot,
     snapshot_local_repo,
+    source_tree_attestation,
 )
 from open_kritt_engine.workspace import (
     prepare_dependency_workspace,
@@ -93,6 +95,113 @@ def test_snapshot_local_repo_supports_non_git_directory_without_git(monkeypatch,
     assert revision == LOCAL_SNAPSHOT_REVISION
     assert (snapshot / "app.py").read_text(encoding="utf-8") == "print('local')\n"
     assert not (snapshot / ".git").exists()
+
+
+def test_attested_local_workspace_verifies_engine_snapshot_and_disables_image_mode(monkeypatch, tmp_path):
+    local_root = tmp_path / "local-repos"
+    source = local_root / "attested"
+    source.mkdir(parents=True)
+    (source / "A.sol").write_text("contract A {}\n", encoding="utf-8")
+    monkeypatch.setenv("LOCAL_REPOS_PATH", str(local_root))
+    configure_isolated_homes(monkeypatch, tmp_path)
+    expected = source_tree_attestation(
+        str(source),
+        repository="attested",
+        local_repositories_root=str(local_root.resolve()),
+    )
+    expected_files = [
+        {
+            "path": "A.sol",
+            "sha256": hashlib.sha256(b"contract A {}\n").hexdigest(),
+            "size": len(b"contract A {}\n"),
+        }
+    ]
+    expected_manifest = json.dumps(
+        expected_files,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert expected["source_tree_sha256"] == hashlib.sha256(expected_manifest).hexdigest()
+    assert expected["file_count"] == 1
+    assert expected["total_bytes"] == len(b"contract A {}\n")
+    scan = local_scan(31, primary="attested")
+    scan["configuration"] = {"source_attestation": expected}
+    monkeypatch.setattr(
+        workspace_module,
+        "_prepare_dependency_snapshot_workspace",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("attested local scans must not use snapshot images")),
+    )
+
+    prepared = prepare_dependency_workspace(
+        data_dir=str(tmp_path / "data"),
+        checkout_cache_dir=str(tmp_path / "cache"),
+        metadata_id=31,
+        scan=scan,
+        use_snapshot_image=True,
+    )
+
+    assert prepared.source_attestation == expected
+    assert (Path(prepared.repo_dir) / "A.sol").read_text(encoding="utf-8") == "contract A {}\n"
+
+
+def test_source_attestation_uses_git_ls_tree_full_path_order(tmp_path):
+    source = tmp_path / "attested"
+    (source / "lockup").mkdir(parents=True)
+    (source / "lockup-dynamic").mkdir()
+    (source / "lockup" / "A.sol").write_text("contract A {}\n", encoding="utf-8")
+    (source / "lockup-dynamic" / "B.sol").write_text("contract B {}\n", encoding="utf-8")
+    expected_files = [
+        {
+            "path": "lockup-dynamic/B.sol",
+            "sha256": hashlib.sha256(b"contract B {}\n").hexdigest(),
+            "size": len(b"contract B {}\n"),
+        },
+        {
+            "path": "lockup/A.sol",
+            "sha256": hashlib.sha256(b"contract A {}\n").hexdigest(),
+            "size": len(b"contract A {}\n"),
+        },
+    ]
+    expected_manifest = json.dumps(
+        expected_files,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    observed = source_tree_attestation(
+        str(source),
+        repository="attested",
+        local_repositories_root=str(tmp_path),
+    )
+
+    assert observed["source_tree_sha256"] == hashlib.sha256(expected_manifest).hexdigest()
+
+
+def test_attested_local_workspace_rejects_source_tree_substitution(monkeypatch, tmp_path):
+    local_root = tmp_path / "local-repos"
+    source = local_root / "attested"
+    source.mkdir(parents=True)
+    (source / "A.sol").write_text("contract A {}\n", encoding="utf-8")
+    monkeypatch.setenv("LOCAL_REPOS_PATH", str(local_root))
+    configure_isolated_homes(monkeypatch, tmp_path)
+    expected = source_tree_attestation(
+        str(source),
+        repository="attested",
+        local_repositories_root=str(local_root.resolve()),
+    )
+    expected["source_tree_sha256"] = "f" * 64
+    scan = local_scan(32, primary="attested")
+    scan["configuration"] = {"source_attestation": expected}
+
+    with pytest.raises(RepoError, match="source attestation mismatch"):
+        prepare_dependency_workspace(
+            data_dir=str(tmp_path / "data"),
+            checkout_cache_dir=str(tmp_path / "cache"),
+            metadata_id=32,
+            scan=scan,
+        )
 
 
 def test_snapshot_and_workspace_copy_include_dirty_and_untracked_files_without_git(monkeypatch, tmp_path):
