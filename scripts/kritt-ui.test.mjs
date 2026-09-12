@@ -159,6 +159,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     { id: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', description: 'not set' },
     { id: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', description: 'not set' },
     { id: 'XAI_API_KEY', label: 'xAI API key', description: 'not set' },
+    { id: 'ZAI_API_KEY', label: 'Z.ai Coding Plan API key', description: 'not set' },
     { id: 'GITHUB_TOKEN', label: 'GitHub token', description: 'optional for private repositories' },
     { id: 'back', label: 'Back', description: 'Return to the main menu' },
   ];
@@ -170,6 +171,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     '○ Anthropic API key not set',
     '○ OpenRouter API key not set',
     '○ xAI API key not set',
+    '○ Z.ai Coding Plan API key not set',
     '○ GitHub token not set (optional)',
   ];
 
@@ -185,7 +187,7 @@ test('long menus keep the selection and footer visible on a short terminal', () 
 
   assert.match(screen, /› Claude login/);
   assert.match(screen, /↑↓ navigate/);
-  assert.match(screen, /2\/9/);
+  assert.match(screen, /2\/10/);
   assert.doesNotMatch(screen, /GitHub token/);
 
   const bottomScreen = renderMenuScreen({
@@ -193,14 +195,14 @@ test('long menus keep the selection and footer visible on a short terminal', () 
     subtitle: 'Choose one option to configure model access',
     details,
     options,
-    selected: 8,
+    selected: 9,
     rows: 14,
     width: 90,
   });
 
   assert.match(bottomScreen, /› Back/);
   assert.match(bottomScreen, /GitHub token/);
-  assert.match(bottomScreen, /9\/9/);
+  assert.match(bottomScreen, /10\/10/);
 });
 
 test('document screens fill the terminal, scroll, and retain semantic color', () => {

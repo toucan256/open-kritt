@@ -12,15 +12,18 @@ export const PROVIDER_KEYS = [
   'ANTHROPIC_API_KEY',
   'OPENROUTER_API_KEY',
   'XAI_API_KEY',
+  'ZAI_API_KEY',
 ];
 export const CODEX_LOGIN_STATUS_KEY = 'CODEX_LOGIN_CONFIGURED';
 export const MANAGED_PROVIDER_ENV_KEYS = {
   openrouter: 'OPENROUTER_API_KEY',
   xai: 'XAI_API_KEY',
+  zai: 'ZAI_API_KEY',
 };
 export const MANAGED_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API key',
   xai: 'xAI API key',
+  zai: 'Z.ai Coding Plan API key',
 };
 const MANAGED_ENV_KEY_TO_PROVIDER = Object.fromEntries(
   Object.entries(MANAGED_PROVIDER_ENV_KEYS).map(([provider, key]) => [key, provider])
@@ -65,6 +68,11 @@ export const ENVIRONMENT_ITEMS = [
     key: 'XAI_API_KEY',
     label: 'xAI API key',
     info: 'Used by the Grok Build harness via the xAI provider.',
+  },
+  {
+    key: 'ZAI_API_KEY',
+    label: 'Z.ai Coding Plan API key',
+    info: 'Used by the Codex harness with the Z.ai GLM Coding Plan Responses endpoint.',
   },
   {
     key: 'GITHUB_TOKEN',
@@ -1376,11 +1384,12 @@ export async function runSetup(options = {}) {
     write(context.io, '5) Anthropic API key');
     write(context.io, '6) OpenRouter API key');
     write(context.io, '7) xAI API key');
-    write(context.io, '8) GitHub token');
-    write(context.io, '9) Finish setup');
+    write(context.io, '8) Z.ai Coding Plan API key');
+    write(context.io, '9) GitHub token');
+    write(context.io, '10) Finish setup');
     const choice = (await context.prompter.ask('Choose an item: ')).toLowerCase();
 
-    if (choice === '9' || choice === 'q' || choice === 'quit') break;
+    if (choice === '10' || choice === 'q' || choice === 'quit') break;
     if (choice === '1') {
       await manageCodexLogin(context);
       continue;

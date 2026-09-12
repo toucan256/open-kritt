@@ -38,9 +38,16 @@ export const PROVIDER_DEFINITIONS = {
     description: 'Grok Build through an xAI device login or API key.',
     management: 'login',
   },
+  zai: {
+    label: 'Z.ai',
+    envKeys: ['ZAI_API_KEY'],
+    credentialLabel: 'Z.ai Coding Plan API key',
+    description: 'GLM Coding Plan models through the Codex harness.',
+    management: 'api_key',
+  },
 };
 
-const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai']);
+const MANAGED_CREDENTIAL_PROVIDERS = new Set(['openrouter', 'xai', 'zai']);
 
 const MAX_CREDENTIAL_LENGTH = 16 * 1024;
 let writeQueue = Promise.resolve();

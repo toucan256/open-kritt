@@ -9,6 +9,7 @@ import { usePagination } from '../lib/usePagination.js';
 const PROVIDER_LINKS = {
   openrouter: 'https://openrouter.ai/settings/keys',
   xai: 'https://console.x.ai/',
+  zai: 'https://z.ai/manage-apikey/apikey-list',
 };
 
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -173,7 +174,7 @@ export default function Accounts() {
           <div style={{ fontSize: 27, fontWeight: 600, letterSpacing: '-0.02em' }}>Accounts</div>
           <div style={{ color: 'var(--text-2)', marginTop: 7, maxWidth: 680, lineHeight: 1.5 }}>
             See which model providers are ready. Sign in to Codex, Claude, or xAI with their official login flows, or
-            add an OpenRouter or xAI API key. Secret values are never returned by the API.
+            add an OpenRouter, xAI, or Z.ai API key. Secret values are never returned by the API.
           </div>
         </div>
         {data && (
@@ -457,7 +458,16 @@ export function removeProviderFromOverview(overview, providerId) {
 }
 
 function ProviderMark({ provider }) {
-  const label = provider === 'codex' ? 'CX' : provider === 'claude' ? 'CL' : provider === 'xai' ? 'XA' : 'OR';
+  const label =
+    provider === 'codex'
+      ? 'CX'
+      : provider === 'claude'
+        ? 'CL'
+        : provider === 'xai'
+          ? 'XA'
+          : provider === 'zai'
+            ? 'ZA'
+            : 'OR';
   return <span className={`mono account-provider-mark account-provider-mark-${provider}`}>{label}</span>;
 }
 

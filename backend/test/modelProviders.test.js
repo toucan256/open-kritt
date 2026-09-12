@@ -11,11 +11,13 @@ const PROVIDER_ENV_KEYS = [
   'ANTHROPIC_API_KEY',
   'OPENROUTER_API_KEY',
   'XAI_API_KEY',
+  'ZAI_API_KEY',
   'OPEN_KRITT_CODEX_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENAI_API_KEY_CONFIGURED',
   'OPEN_KRITT_ANTHROPIC_API_KEY_CONFIGURED',
   'OPEN_KRITT_OPENROUTER_API_KEY_CONFIGURED',
   'OPEN_KRITT_XAI_API_KEY_CONFIGURED',
+  'OPEN_KRITT_ZAI_API_KEY_CONFIGURED',
   'OPEN_KRITT_CODEX_LOGIN_CONFIGURED',
   'CODEX_LOGIN_CONFIGURED',
 ];
@@ -76,11 +78,12 @@ test('model provider API exposes configured IDs and rejects unavailable scan pro
   const previous = new Map(PROVIDER_ENV_KEYS.map((key) => [key, process.env[key]]));
   for (const key of PROVIDER_ENV_KEYS) delete process.env[key];
   process.env.CODEX_API_KEY = 'test-key';
+  process.env.ZAI_API_KEY = 'zai-test-key';
   t.after(() => restoreEnv(previous));
 
   const availability = await requestApp('/api/model-providers');
   assert.equal(availability.status, 200);
-  assert.deepEqual(availability.body, { providers: ['codex'] });
+  assert.deepEqual(availability.body, { providers: ['codex', 'zai'] });
 
   const scan = await requestApp('/api/scans', {
     method: 'POST',

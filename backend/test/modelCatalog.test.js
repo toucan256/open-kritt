@@ -219,6 +219,31 @@ test('xAI device login keeps a default Grok model when the API catalog is empty'
   });
 });
 
+test('Z.ai Coding Plan exposes the documented GLM 5.3 catalog', () => {
+  assert.deepEqual(buildModelCatalogResponse(['zai']).providers[0], {
+    provider: 'zai',
+    input: 'select',
+    models: [
+      {
+        id: 'glm-5.3-flash',
+        label: 'GLM 5.3 Flash',
+        thinkingEfforts: ['low', 'high', 'max'],
+        isDefault: true,
+      },
+      {
+        id: 'glm-5.3',
+        label: 'GLM 5.3',
+        thinkingEfforts: ['low', 'high', 'max'],
+        isDefault: false,
+      },
+    ],
+    defaultModel: 'glm-5.3-flash',
+    status: 'ready',
+  });
+  assert.equal(isCachedModel('zai', 'glm-5.3', null), true);
+  assert.equal(isCachedModel('zai', 'glm-5.4', null), false);
+});
+
 test('a last refresh error retains a previously valid cached catalog', () => {
   const catalog = {
     provider: 'codex',

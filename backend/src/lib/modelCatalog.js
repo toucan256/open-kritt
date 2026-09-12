@@ -57,6 +57,21 @@ const XAI_GROK_MODELS = [
   },
 ];
 
+const ZAI_CODING_PLAN_MODELS = [
+  {
+    id: 'glm-5.3-flash',
+    label: 'GLM 5.3 Flash',
+    thinkingEfforts: ['low', 'high', 'max'],
+    isDefault: true,
+  },
+  {
+    id: 'glm-5.3',
+    label: 'GLM 5.3',
+    thinkingEfforts: ['low', 'high', 'max'],
+    isDefault: false,
+  },
+];
+
 function normalizedProvider(provider) {
   return `${provider || ''}`.trim().toLowerCase();
 }
@@ -138,6 +153,18 @@ export function modelCatalogEntry(provider, catalog) {
       input: 'text',
       models: XAI_GROK_MODELS,
       defaultModel: 'grok-4.6',
+      status: 'ready',
+    };
+  }
+
+  // The GLM Coding Plan endpoint does not expose a public model-discovery API.
+  // Keep the documented GLM 5.3 catalog fixed until Z.ai publishes one.
+  if (provider === 'zai') {
+    return {
+      provider,
+      input: 'select',
+      models: ZAI_CODING_PLAN_MODELS,
+      defaultModel: 'glm-5.3-flash',
       status: 'ready',
     };
   }

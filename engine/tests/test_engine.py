@@ -1048,6 +1048,41 @@ def test_harness_prompt_explains_stub_contract():
     assert '"thing"' in prompt
 
 
+def test_zai_codex_command_builds_official_provider_without_secret_argv():
+    command = harnesses.codex_exec_command(
+        repo_dir="/tmp/repo",
+        model="glm-5.3-flash",
+        schema_path="/tmp/schema.json",
+        output_path="/tmp/output.json",
+        model_provider="zai",
+        thinking_effort="high",
+        allow_tools=False,
+    )
+
+    assert command[command.index("-m") + 1] == "glm-5.3-flash"
+    assert command[command.index("-o") + 1] == "/tmp/output.json"
+    assert 'model_provider="ZAI"' in command
+    assert 'model_providers.ZAI.base_url="https://api.z.ai/api/v1"' in command
+    assert 'model_providers.ZAI.env_key="ZAI_API_KEY"' in command
+    assert 'model_providers.ZAI.wire_api="responses"' in command
+    assert 'model_reasoning_effort="high"' in command
+    assert not any("ZAI_API_KEY" in part and "env_key" not in part for part in command)
+
+
+def test_zai_codex_harness_requires_api_key(monkeypatch, tmp_path):
+    harness = CodexHarness(timeout_seconds=5, model_provider="zai")
+
+    with pytest.raises(HarnessError, match="ZAI_API_KEY is required"):
+        harness.run(
+            prompt="prompt",
+            schema=output_schema('{"thing":"string"}', multi_output=False),
+            repo_dir="/tmp",
+            model="glm-5.3",
+            env={"HOME": str(tmp_path)},
+            allow_tools=False,
+        )
+
+
 def test_codex_harness_uses_dangerous_permissions_and_web_search(monkeypatch):
     captured = {}
 
@@ -2254,6 +2289,29 @@ def test_job_workspace_reloads_codex_homes_from_runtime_file(monkeypatch, tmp_pa
     assert "OPEN_KRITT_CODEX_SOURCE_HOME" not in workspace_1.env
     assert (Path(workspace_1.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"a"}'
     assert (Path(workspace_2.env["CODEX_HOME"]) / "auth.json").read_text(encoding="utf-8") == '{"account":"b"}'
+
+
+def test_zai_job_workspace_materializes_non_secret_codex_catalog(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    runtime_path = ensure_runtime_config_file(str(data_dir))
+    runtime_path.write_text("ENGINE_WORKER_COUNT=1\n", encoding="utf-8")
+    monkeypatch.setenv("ZAI_API_KEY", "unit-test-key")
+
+    workspace = prepare_job_workspace(str(data_dir), 314, harness_name="codex", model_provider="zai")
+    codex_home = Path(workspace.env["CODEX_HOME"])
+    config = (codex_home / "config.toml").read_text(encoding="utf-8")
+    catalog = json.loads((codex_home / "models.json").read_text(encoding="utf-8"))
+
+    assert workspace.provider_account_provider is None
+    assert workspace.env["ZAI_API_KEY"] == "unit-test-key"
+    assert 'model_provider = "ZAI"' in config
+    assert 'base_url = "https://api.z.ai/api/v1"' in config
+    assert 'env_key = "ZAI_API_KEY"' in config
+    assert 'wire_api = "responses"' in config
+    assert [model["slug"] for model in catalog["models"]] == ["glm-5.3", "glm-5.3-flash"]
+    assert catalog["models"][1]["input_modalities"] == ["text", "image"]
+    assert "unit-test-key" not in config
+    assert "unit-test-key" not in json.dumps(catalog)
 
 
 def test_cleanup_job_workspace_removes_metadata_directory(tmp_path):

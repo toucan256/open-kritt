@@ -1,0 +1,49 @@
+---
+title: "Z.ai"
+description: "Use a GLM Coding Plan key with GLM 5.3 models through the Codex harness."
+---
+
+The **Z.ai** provider uses `ZAI_API_KEY` from the GLM Coding Plan and runs through the
+Codex harness. It is different from OpenRouter's pay-as-you-go `z-ai/*` models: the key
+and fixed `https://api.z.ai/api/v1` endpoint consume your GLM Coding Plan quota.
+
+## Create and configure the key
+
+<Steps>
+  <Step title="Subscribe and create the key">
+    Subscribe to the [GLM Coding Plan](https://z.ai/subscribe), then create the plan key
+    from Z.ai's [API key page](https://z.ai/manage-apikey/apikey-list). Team-plan keys
+    are not interchangeable with ordinary Z.ai API keys.
+  </Step>
+  <Step title="Save the key in open·kritt">
+    Run `./kritt setup`, choose **Z.ai Coding Plan API key**, and paste the key. You can
+    also add or replace it from the running application's **Accounts** page. The value is
+    stored in gitignored provider state and never returned by the API.
+  </Step>
+  <Step title="Recreate the stack">
+    If the stack is already running, stop it with Ctrl+C and run `./kritt start` again so
+    the engine receives the new key.
+  </Step>
+</Steps>
+
+## Choose a model
+
+The provider offers the documented GLM Coding Plan models:
+
+- `glm-5.3-flash` — multimodal, lower-cost default
+- `glm-5.3` — text-only flagship
+
+Reasoning efforts are `low`, `high`, and `max`. The provider is paired with the Codex
+harness; Claude Code is not configured for this provider.
+
+## Verify and troubleshoot
+
+- `./kritt setup` should show **Z.ai Coding Plan API key present**.
+- A scan should use `model_provider=zai`, `harness=codex`, and one of the two model IDs above.
+- A `401` usually means the key is missing, revoked, or not a GLM Coding Plan key.
+- A quota or rate-limit error reflects the plan's 5-hour/weekly credit limits.
+- Model IDs do not use the OpenRouter `z-ai/` prefix.
+
+See Z.ai's [GLM Coding Plan quick start](https://docs.z.ai/devpack/quick-start) and
+[Codex integration](https://docs.z.ai/devpack/tool/codex) for current subscription,
+endpoint, and usage-policy details.

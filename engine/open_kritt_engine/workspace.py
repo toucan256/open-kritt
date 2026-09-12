@@ -54,6 +54,7 @@ LOGGER = logging.getLogger("open_kritt_engine.workspace")
 SCAN_RUNNER_WORKDIR = "/workspace"
 SELECTED_AGENT_SKILLS_SLUG = "open-kritt-selected-skills"
 OPENROUTER_CODEX_BASE_URL = "https://openrouter.ai/api/v1"
+ZAI_CODEX_BASE_URL = "https://api.z.ai/api/v1"
 JOB_UID_BASE = 100_000
 JOB_UID_SPAN = 2_000_000_000
 _SHARED_WORKSPACE_LOCKS: dict[str, threading.Lock] = {}
@@ -178,6 +179,8 @@ def prepare_job_workspace(
     )
     if needs_codex_home and codex_source:
         _copy_credential_files(Path(codex_source), codex_home, ("auth.json",))
+    elif needs_codex_home and selected_provider == "zai":
+        _prepare_zai_codex_home(codex_home)
     elif needs_codex_home:
         _prepare_openrouter_codex_home(codex_home)
     if needs_claude_home and selected_provider == "claude":
@@ -292,6 +295,75 @@ def _prepare_openrouter_codex_home(codex_home: Path):
         ),
     )
     config.chmod(0o600)
+
+
+def _prepare_zai_codex_home(codex_home: Path):
+    """Create the official non-secret Codex configuration for GLM Coding Plan."""
+
+    codex_home.mkdir(parents=True, exist_ok=True)
+    config = codex_home / "config.toml"
+    _atomic_write_text(
+        config,
+        "\n".join(
+            [
+                'model_provider = "ZAI"',
+                'model = "glm-5.3-flash"',
+                'model_reasoning_effort = "max"',
+                'model_catalog_json = "~/.codex/models.json"',
+                "",
+                "[model_providers.ZAI]",
+                'name = "Z.ai"',
+                f'base_url = "{ZAI_CODEX_BASE_URL}"',
+                'env_key = "ZAI_API_KEY"',
+                'wire_api = "responses"',
+                "",
+            ]
+        ),
+    )
+    config.chmod(0o600)
+
+    models = codex_home / "models.json"
+    _atomic_write_text(
+        models,
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": model_id,
+                        "display_name": model_id,
+                        "description": "Z.ai GLM Coding Plan model",
+                        "default_reasoning_level": "max",
+                        "supported_reasoning_levels": [
+                            {"effort": "low", "description": "Light reasoning"},
+                            {"effort": "high", "description": "Enhanced reasoning"},
+                            {"effort": "max", "description": "Deep reasoning"},
+                        ],
+                        "shell_type": "shell_command",
+                        "visibility": "list",
+                        "supported_in_api": True,
+                        "priority": 0,
+                        "base_instructions": "",
+                        "supports_reasoning_summaries": True,
+                        "default_reasoning_summary": "none",
+                        "support_verbosity": False,
+                        "apply_patch_tool_type": "freeform",
+                        "truncation_policy": {"mode": "bytes", "limit": 10000},
+                        "context_window": 1048576,
+                        "max_context_window": 1048576,
+                        "effective_context_window_percent": 95,
+                        "supports_parallel_tool_calls": True,
+                        "experimental_supported_tools": [],
+                        "input_modalities": ["text", "image"] if model_id.endswith("-flash") else ["text"],
+                    }
+                    for model_id in ("glm-5.3", "glm-5.3-flash")
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+    )
+    models.chmod(0o600)
 
 
 def _prepare_claude_config(claude_home: Path):

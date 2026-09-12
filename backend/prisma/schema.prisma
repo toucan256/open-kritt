@@ -156,7 +156,7 @@ model Scan {
   configuration    Json  @map("configuration")
   sourceAttestation Json? @map("source_attestation")
   model         String
-  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai
+  modelProvider String  @default("openrouter") @map("model_provider") // codex, claude, openrouter, xai, zai
   harness       String
   thinkingEffort String? @map("thinking_effort") // default, low, medium, high, xhigh, max, ultra
   // Optional depth-keyed model tuples. The top-level tuple remains the fallback

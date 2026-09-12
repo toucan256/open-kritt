@@ -62,8 +62,8 @@ const modelCatalog = configuredModelCatalog({
 describe('configuredModelProviders', () => {
   it('uses only supported provider IDs returned by the API', () => {
     expect(
-      configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai'] })
-    ).toEqual(['codex', 'claude', 'openrouter', 'xai']);
+      configuredModelProviders({ providers: ['OPENROUTER', 'unknown', 'claude', 'codex', 'codex', 'xai', 'ZAI'] })
+    ).toEqual(['codex', 'claude', 'openrouter', 'xai', 'zai']);
   });
 
   it('handles empty and malformed availability responses', () => {
@@ -78,6 +78,7 @@ describe('model provider defaults', () => {
     expect(defaultModelForModelProvider('claude')).toBe('claude-sonnet-5');
     expect(defaultModelForModelProvider('openrouter')).toBe('z-ai/glm-5.2');
     expect(defaultModelForModelProvider('xai')).toBe('grok-4.6');
+    expect(defaultModelForModelProvider('zai')).toBe('glm-5.3-flash');
   });
 
   it('moves provider-owned model defaults with the provider', () => {
@@ -290,6 +291,11 @@ describe('model provider harnesses', () => {
   it('pairs xAI with the Grok Build harness', () => {
     expect(harnessesForModelProvider('xai')).toEqual(['grok-build']);
     expect(defaultHarnessForModelProvider('xai')).toBe('grok-build');
+  });
+
+  it('pairs Z.ai with the Codex harness', () => {
+    expect(harnessesForModelProvider('zai')).toEqual(['codex']);
+    expect(defaultHarnessForModelProvider('zai')).toBe('codex');
   });
 
   it('returns no harness for an unsupported provider', () => {
