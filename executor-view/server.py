@@ -204,6 +204,7 @@ XAI_KEY_CACHE_SECONDS = int(os.getenv("EXECUTOR_VIEW_XAI_KEY_CACHE_SECONDS", "60
 MANAGED_PROVIDER_ENV_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
     "xai": "XAI_API_KEY",
+    "zai": "ZAI_API_KEY",
 }
 MANAGED_PROVIDERS = frozenset(MANAGED_PROVIDER_ENV_KEYS)
 DEEP_ACCOUNT_REFRESH = os.getenv("EXECUTOR_VIEW_DEEP_ACCOUNT_REFRESH", "0").lower() in (
@@ -336,7 +337,7 @@ def internal_request_path_allowed(method, path):
         method == "GET"
         and len(parts) == 3
         and parts[:2] == ["api", "accounts"]
-        and parts[2] in {"codex", "claude", "openrouter", "xai"}
+        and parts[2] in {"codex", "claude", "openrouter", "xai", "zai"}
     ):
         return True
     return (
@@ -763,6 +764,7 @@ def accounts_for_state(force=False):
         empty_claude_accounts(),
         fetch_openrouter_accounts(force=False),
         fetch_xai_accounts(force=False),
+        fetch_zai_accounts(force=False),
         fetched=False,
     )
 
@@ -1284,7 +1286,8 @@ def fetch_accounts(force=False):
         claude = fetch_claude_accounts(force=True)
         openrouter = fetch_openrouter_accounts(force=True)
         xai = fetch_xai_accounts(force=True)
-        data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
+        zai = fetch_zai_accounts(force=True)
+        data = build_account_overview(codex, claude, openrouter, xai, zai, fetched=True)
         ACCOUNT_OVERVIEW_CACHE["data"] = data
         ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
         return data
@@ -1292,7 +1295,8 @@ def fetch_accounts(force=False):
     claude = fetch_claude_accounts(force=force)
     openrouter = fetch_openrouter_accounts(force=force)
     xai = fetch_xai_accounts(force=force)
-    data = build_account_overview(codex, claude, openrouter, xai, fetched=True)
+    zai = fetch_zai_accounts(force=force)
+    data = build_account_overview(codex, claude, openrouter, xai, zai, fetched=True)
     ACCOUNT_OVERVIEW_CACHE["data"] = data
     ACCOUNT_OVERVIEW_CACHE["expires_at"] = now + ACCOUNT_OVERVIEW_CACHE_SECONDS
     return data
@@ -1304,6 +1308,7 @@ def fetch_account_provider(kind, force=False):
         "claude": fetch_claude_accounts,
         "openrouter": fetch_openrouter_accounts,
         "xai": fetch_xai_accounts,
+        "zai": fetch_zai_accounts,
     }
     fetcher = fetchers.get(kind)
     if not fetcher:
@@ -1329,6 +1334,10 @@ def build_account_provider(kind, data):
             "xAI",
             "Grok device login homes and optional xAI API key status for Grok Build.",
         ),
+        "zai": (
+            "Z.ai",
+            "Local GLM Coding Plan key configuration for the Codex harness.",
+        ),
     }
     label, description = metadata[kind]
     return {
@@ -1344,12 +1353,13 @@ def build_account_provider(kind, data):
     }
 
 
-def build_account_overview(codex, claude, openrouter, xai, fetched=True):
+def build_account_overview(codex, claude, openrouter, xai, zai, fetched=True):
     providers = [
         build_account_provider("codex", codex),
         build_account_provider("claude", claude),
         build_account_provider("openrouter", openrouter),
         build_account_provider("xai", xai),
+        build_account_provider("zai", zai),
     ]
     return {
         "generatedAt": datetime.now(timezone.utc),
@@ -1370,6 +1380,7 @@ def build_account_overview(codex, claude, openrouter, xai, fetched=True):
         "claude": claude,
         "openrouter": openrouter,
         "xai": xai,
+        "zai": zai,
         "providers": providers,
     }
 
@@ -2076,6 +2087,57 @@ def fetch_xai_accounts(force=False):
         "limited": limited,
         "stale": stale,
         "accounts": accounts,
+    }
+
+
+def fetch_zai_accounts(force=False):
+    api_key = configured_secret("ZAI_API_KEY") or configured_secret(
+        "EXECUTOR_VIEW_ZAI_API_KEY"
+    )
+    if not api_key:
+        account = {
+            "id": "zai-api-key",
+            "provider": "Z.ai",
+            "label": "Z.ai Coding Plan API key",
+            "path": "ZAI_API_KEY",
+            "active": False,
+            "status": "missing key",
+            "statusKind": "missing",
+            "details": [],
+        }
+        return {
+            "generatedAt": datetime.now(timezone.utc),
+            "configuredRaw": "ZAI_API_KEY",
+            "active": 0,
+            "total": 1,
+            "limited": 0,
+            "stale": 0,
+            "accounts": [account],
+        }
+
+    details = []
+    add_detail(details, "Provider", "Z.ai GLM Coding Plan")
+    add_detail(details, "ZAI_API_KEY", masked_secret(api_key), mono=True)
+    add_detail(details, "Key fingerprint", secret_fingerprint(api_key), mono=True)
+    add_detail(details, "Validation", "deferred until the first model request")
+    account = {
+        "id": "zai-api-key",
+        "provider": "Z.ai",
+        "label": "Z.ai Coding Plan API key",
+        "path": "ZAI_API_KEY",
+        "active": True,
+        "status": "key configured",
+        "statusKind": "available",
+        "details": details,
+    }
+    return {
+        "generatedAt": datetime.now(timezone.utc),
+        "configuredRaw": "ZAI_API_KEY",
+        "active": 1,
+        "total": 1,
+        "limited": 0,
+        "stale": 0,
+        "accounts": [account],
     }
 
 
@@ -4698,7 +4760,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             len(parts) == 3
             and parts[:2] == ["api", "accounts"]
-            and parts[2] in {"codex", "claude", "openrouter", "xai"}
+            and parts[2] in {"codex", "claude", "openrouter", "xai", "zai"}
         ):
             try:
                 query = parse_qs(parsed.query)

@@ -243,6 +243,9 @@ class ExecutorViewSummaryTests(unittest.TestCase):
         self.assertTrue(
             server.internal_request_path_allowed("GET", "/api/accounts/claude")
         )
+        self.assertTrue(
+            server.internal_request_path_allowed("GET", "/api/accounts/zai")
+        )
         self.assertFalse(
             server.internal_request_path_allowed("GET", "/api/accounts/unknown")
         )
@@ -476,6 +479,14 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             "accounts": [],
             "configuredRaw": "XAI_API_KEY",
         }
+        zai = {
+            "active": 0,
+            "total": 1,
+            "limited": 0,
+            "stale": 0,
+            "accounts": [],
+            "configuredRaw": "ZAI_API_KEY",
+        }
         server.ACCOUNT_OVERVIEW_CACHE = {"expires_at": 0.0, "data": None}
 
         with (
@@ -488,14 +499,17 @@ class ExecutorViewSummaryTests(unittest.TestCase):
                 server, "fetch_openrouter_accounts", return_value=openrouter
             ) as fetch_openrouter,
             patch.object(server, "fetch_xai_accounts", return_value=xai) as fetch_xai,
+            patch.object(server, "fetch_zai_accounts", return_value=zai) as fetch_zai,
         ):
             overview = server.fetch_accounts(force=True)
 
         fetch_codex.assert_called_once_with(force=True)
         fetch_openrouter.assert_called_once_with(force=True)
         fetch_xai.assert_called_once_with(force=True)
+        fetch_zai.assert_called_once_with(force=True)
         self.assertEqual(overview["codex"]["total"], 1)
         self.assertEqual(overview["xai"]["configuredRaw"], "XAI_API_KEY")
+        self.assertEqual(overview["zai"]["configuredRaw"], "ZAI_API_KEY")
         self.assertEqual(overview["active"], 1)
 
     def test_account_provider_refresh_loads_only_the_requested_provider(self):
@@ -1365,6 +1379,34 @@ class ExecutorViewSummaryTests(unittest.TestCase):
             self.assertEqual(login["statusKind"], "available")
             self.assertTrue(key["active"])
             self.assertIn("XAI_API_KEY", result["configuredRaw"])
+
+    def test_zai_account_reports_local_key_without_secret_egress(self):
+        with patch.object(
+            server,
+            "configured_secret",
+            side_effect=lambda name: (
+                "unit-test-zai-key" if name == "ZAI_API_KEY" else None
+            ),
+        ):
+            result = server.fetch_zai_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(account["status"], "key configured")
+        self.assertEqual(account["statusKind"], "available")
+        self.assertEqual(account["path"], "ZAI_API_KEY")
+        serialized = json.dumps(result, default=server.encode)
+        self.assertNotIn("unit-test-zai-key", serialized)
+
+    def test_zai_missing_key_is_explicit(self):
+        with patch.object(server, "configured_secret", return_value=None):
+            result = server.fetch_zai_accounts(force=True)
+
+        account = result["accounts"][0]
+        self.assertEqual(result["active"], 0)
+        self.assertFalse(account["active"])
+        self.assertEqual(account["status"], "missing key")
+        self.assertEqual(account["statusKind"], "missing")
 
     def test_managed_xai_key_overrides_environment_and_disable_is_sticky(self):
         with tempfile.TemporaryDirectory() as directory:
